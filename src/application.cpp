@@ -48,7 +48,7 @@ void processCRSFFrame(uint8_t* buffer, uint16_t len)
     switch (crsf_id)
     {
 
-        
+
 
         /* ================= GPS ================= */
         case GPS_ID:
@@ -70,21 +70,12 @@ void processCRSFFrame(uint8_t* buffer, uint16_t len)
                 cur.alt_ag = 0;
 
             /* ---- GPS LOG ---- */
-            static float lastLat = 999;
-            static float lastLon = 999;
-
-            if (fabs(cur.lat - lastLat) > 0.000001f ||
-                fabs(cur.lon - lastLon) > 0.000001f)
-            {
-                LOG_INFO("GPS: %.7f, %.7f alt=%d sats=%d",
-                         cur.lat,
-                         cur.lon,
-                         crsf.gps_altitude,
-                         crsf.gps_sats);
-
-                lastLat = cur.lat;
-                lastLon = cur.lon;
-            }
+            // change-gating temporarily removed: log every frame
+            LOG_INFO("GPS: %.7f, %.7f alt=%d sats=%d",
+                     cur.lat,
+                     cur.lon,
+                     crsf.gps_altitude,
+                     crsf.gps_sats);
 
             /* ---- GPS STATUS CHANGE ---- */
             if (gpsGood != prevGpsGood)
@@ -106,14 +97,8 @@ void processCRSFFrame(uint8_t* buffer, uint16_t len)
             // in m/s für Berechnungen / Logging
             float climb_m_s = crsf.varioF;
 
-            static float lastClimb = 999.0f;
-
-            // nur loggen, wenn sich Wert geändert hat
-            if (fabs(climb_m_s - lastClimb) > 0.01f)
-            {
-                LOG_INFO("VARIO: %+.2f m/s (%d cm/s)", climb_m_s, climb_cm);
-                lastClimb = climb_m_s;
-            }
+            // change-gating temporarily removed: log every frame
+            LOG_INFO("VARIO: %+.2f m/s (%d cm/s)", climb_m_s, climb_cm);
 
         } break;
 
@@ -124,18 +109,12 @@ void processCRSFFrame(uint8_t* buffer, uint16_t len)
             hud_bat1_amps  = crsf.batF_current;
             hud_bat1_mAh   = crsf.bat_fuel_drawn;   // mAh drawn (capacity used)
 
-            static int16_t lastVolt = -9999;
-
-            if (hud_bat1_volts != lastVolt)
-            {
-                LOG_INFO("BAT: %.1fV %.1fA %u%% %lumAh",
-                         crsf.batF_voltage,
-                         crsf.batF_current,
-                         crsf.bat_remaining,
-                         (unsigned long)crsf.bat_fuel_drawn);
-
-                lastVolt = hud_bat1_volts;
-            }
+            // change-gating temporarily removed: log every frame
+            LOG_INFO("BAT: %.1fV %.1fA %u%% %lumAh",
+                     crsf.batF_voltage,
+                     crsf.batF_current,
+                     crsf.bat_remaining,
+                     (unsigned long)crsf.bat_fuel_drawn);
 
         } break;
 
@@ -153,17 +132,11 @@ void processCRSFFrame(uint8_t* buffer, uint16_t len)
         {
             cur.hdg = crsf.attiF_yaw;
 
-            static float lastPitch = 999;
-
-            if (fabs(crsf.attiF_pitch - lastPitch) > 0.1f)
-            {
-                LOG_INFO("ATT: p=%.1f r=%.1f y=%.1f",
-                         crsf.attiF_pitch,
-                         crsf.attiF_roll,
-                         crsf.attiF_yaw);
-
-                lastPitch = crsf.attiF_pitch;
-            }
+            // change-gating temporarily removed: log every frame
+            LOG_INFO("ATT: p=%.1f r=%.1f y=%.1f",
+                     crsf.attiF_pitch,
+                     crsf.attiF_roll,
+                     crsf.attiF_yaw);
 
         } break;
 
@@ -184,20 +157,70 @@ void processCRSFFrame(uint8_t* buffer, uint16_t len)
         {
             motArmed = (crsf.flightMode.compare("ARM") == 0);
 
-            if (crsf.flightMode != lastMode)
-            {
-                LOG_INFO("MODE: %s Armed:%d",
-                         crsf.flightMode.c_str(),
-                         motArmed);
+            // change-gating temporarily removed: log every frame
+            LOG_INFO("MODE: %s Armed:%d",
+                     crsf.flightMode.c_str(),
+                     motArmed);
 
-                lastMode = crsf.flightMode;
+        } break;
+
+        /* ================= DEVICE INFO (0x29) ================= */
+        case DEVICE_INFO_ID:
+        {
+            // Extended CRSF frame:
+            //   [0]=addr [1]=len [2]=0x29 [3]=dest [4]=origin
+            //   [5..]=display name (NUL-terminated ASCII)
+            //   then serial(u32) hw(u32) sw(u32) param_count(u8) param_proto(u8) [CRC]
+            uint8_t origin = (len > 4) ? buffer[4] : 0;
+
+            char name[40] = {0};
+            uint16_t i = 5, j = 0;
+            while (i < len && buffer[i] != 0 && j < sizeof(name) - 1)
+                name[j++] = (char)buffer[i++];
+            name[j] = '\0';
+
+            uint16_t after = i + 1;   // step past the NUL terminator
+            uint32_t serial = 0, hw = 0, sw = 0;
+            uint8_t  param_count = 0, param_proto = 0;
+            if (after + 14 <= len)
+            {
+                serial = ((uint32_t)buffer[after]   << 24) | ((uint32_t)buffer[after+1] << 16) |
+                         ((uint32_t)buffer[after+2]  << 8)  |  (uint32_t)buffer[after+3];
+                hw     = ((uint32_t)buffer[after+4]  << 24) | ((uint32_t)buffer[after+5] << 16) |
+                         ((uint32_t)buffer[after+6]  << 8)  |  (uint32_t)buffer[after+7];
+                sw     = ((uint32_t)buffer[after+8]  << 24) | ((uint32_t)buffer[after+9] << 16) |
+                         ((uint32_t)buffer[after+10] << 8)  |  (uint32_t)buffer[after+11];
+                param_count = buffer[after+12];
+                param_proto = buffer[after+13];
             }
+
+            const char* who = "?";
+            switch (origin)
+            {
+                case 0xEA: who = "Radio";     break;
+                case 0xEE: who = "TX-Module"; break;
+                case 0xEC: who = "RX";        break;
+                case 0xC8: who = "FC";        break;
+            }
+
+            LOG_INFO("DEVICE_INFO from 0x%02X (%s): name='%s' serial=0x%08lX hw=0x%08lX sw=0x%08lX params=%u proto=%u",
+                     origin, who, name,
+                     (unsigned long)serial, (unsigned long)hw, (unsigned long)sw,
+                     param_count, param_proto);
+
+            char hexString[256] = {0};
+            char* ptr = hexString;
+            for (uint16_t k = 0; k < len && (ptr - hexString) < (int)sizeof(hexString) - 4; k++)
+                ptr += sprintf(ptr, "%02X ", buffer[k]);
+            LOG_INFO("DEVICE_INFO raw: %s", hexString);
 
         } break;
 
         default:
         {
-            LOG_INFO("Unknown CRSF ID: 0x%02X (len=%d)", crsf_id, len);
+            // decodeTelemetry() returns 0 for any unrecognized type, masking the
+            // real frame type. Log buffer[2] (the actual CRSF type byte) instead.
+            LOG_INFO("Unknown CRSF ID: 0x%02X (len=%d)", buffer[2], len);
 
             // komplettes Paket als HEX dump ausgeben
             char hexString[512] = {0};

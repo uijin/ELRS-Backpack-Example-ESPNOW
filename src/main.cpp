@@ -21,6 +21,7 @@
 #include <math.h>
 #include "application.h"
 #include "types.h"
+#include "tak.h"
 
 // ======================================================
 // 2. Platform Selection (ESP32 / ESP8266)
@@ -46,15 +47,15 @@ enum RadioMode
 // 3. Configuration (Defines, UID, WiFi, Logging)
 // ======================================================
 
-// Please use ExpressLRS Configurator Runtime Options to obtain your UID (unique MAC hashed 
+// Please use ExpressLRS Configurator Runtime Options to obtain your UID (unique MAC hashed
 // from binding_phrase) Insert the six numbers between the curly brackets below
-//For ESP NOW / ELRS Backpack you need to enter the UID resulting from hashing your 
-//secret binding phrase. This must be obtained by launching https://expresslrs.github.io/web-flasher/, 
+//For ESP NOW / ELRS Backpack you need to enter the UID resulting from hashing your
+//secret binding phrase. This must be obtained by launching https://expresslrs.github.io/web-flasher/,
 //enter your binding phrase, then make a note of the UID. Enter the 6 numbers between the commas
 // Config Elrs Binding
-//uint8_t UID[6] = {0,0,0,0,0,0}; // this is my UID. You have to change it to your once, should look 
+//uint8_t UID[6] = {0,0,0,0,0,0}; // this is my UID. You have to change it to your once, should look
 //uint8_t UID[6] = {106,19,19,206,193,30};
-uint8_t UID[6] = {139,196,5,180,197,77};
+uint8_t UID[6] = {0,0,0,0,0,0};   // <-- enter YOUR UID (hash of your binding phrase)
 
 // ======================================================
 // RadioMode Configuration
@@ -80,8 +81,8 @@ RadioMode radioMode = MODE_BOTH;   // Default startup mode
 const unsigned long CONFIG_WINDOW_MS = 5000;  // 5 seconds
 
 // ===== AP Wifi Config =====
-const char* ssid = "Backpack_ELRS_Crsf";           // SSID des Access Points
-const char* password = "12345678";                  // Passwort des Access Points
+const char* ssid = "Backpack_TAK";              // SSID of the SoftAP (change me)
+const char* password = "changeme123";                 // AP password, min 8 chars (change me)
 
 // ===== Config for Channel output =====
 const uint8_t NUM_CHANNELS = 16;
@@ -167,7 +168,7 @@ void OnDataRecv(uint8_t * mac, uint8_t *incomingData, uint8_t len) {
     if (len <= 8 || incomingData == NULL) return;
 
     if (incomingData[8] == 0 && incomingData[9] == 0 && len > 10) {
-        return; 
+        return;
     }
 
     crsf_len = len - 8;
@@ -223,19 +224,21 @@ void initSerial()
 void initWiFi()
 {
     UID[0] &= ~0x01;   // unicast fix
-    WiFi.mode(WIFI_STA);
+    // AP_STA: STA interface keeps the UID MAC for ESP-NOW telemetry RX,
+    // while the SoftAP (brought up later in takInit) serves the phone.
+    WiFi.mode(WIFI_AP_STA);
     WiFi.disconnect();
-    
+
     #if defined(ESP32)
         // Deine echte Identität bleibt die UID! (Wichtig für den RX-Empfang)
         esp_wifi_set_mac(WIFI_IF_STA, UID);
-        
+
         uint8_t ap_mac[6];
         memcpy(ap_mac, UID, 6);
         ap_mac[5] ^= 0x01;
         esp_wifi_set_mac(WIFI_IF_AP, ap_mac);
-        
-        esp_wifi_start(); 
+
+        esp_wifi_start();
         esp_wifi_set_channel(1, WIFI_SECOND_CHAN_NONE);
     #else
         wifi_set_macaddr(STATION_IF, UID);
@@ -261,7 +264,7 @@ void initESPNow()
     #if defined(ESP32)
         // Für den ESP32 müssen wir hier keine Sende-Peers registrieren.
         // Der RX-Empfang geht automatisch.
-        // Das TX-Senden (Senden an sich selbst) wird über den L2-Raw-Bypass 
+        // Das TX-Senden (Senden an sich selbst) wird über den L2-Raw-Bypass
         // in der fake_vrx_fake_trainer.cpp abgewickelt!
     #else
         // FÜR ESP8266: Bleibt komplett unverändert auf der Original-Logik
@@ -318,6 +321,7 @@ void setup() {
     initESP32Queue();
     vrxModule.init(UID);
     initRamp();
+    takInit(ssid, password);   // SoftAP + CoT/UDP bridge for iOS TAK
     initInfo();
 }
 
@@ -383,4 +387,9 @@ void loop()
     {
         vrxModule.updateChannelRamp();   // ESP-NOW senden
     }
+
+    // ======================================================
+    // TAK / CoT Bridge (SoftAP web server + UDP CoT emit)
+    // ======================================================
+    takLoop();
 }
