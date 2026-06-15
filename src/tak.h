@@ -24,3 +24,7 @@ void takInit(const char* ssid, const char* password);
 // Pump the DNS/web server and emit CoT on a timer.
 // Call every loop() iteration (non-blocking).
 void takLoop();
+
+// True once the system clock has been set from the phone (time sync done).
+// Used e.g. to change the status-LED blink cadence after sync.
+bool takClockSynced();

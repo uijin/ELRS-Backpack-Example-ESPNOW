@@ -31,6 +31,7 @@
 #include <WiFi.h>
 #include <esp_wifi.h>
 #include <esp_now.h>
+#include <esp_timer.h>
 #else
 #include <ESP8266WiFi.h>
 #include <espnow.h>
@@ -83,6 +84,20 @@ const unsigned long CONFIG_WINDOW_MS = 5000;  // 5 seconds
 // ===== AP Wifi Config =====
 const char* ssid = "Backpack_TAK";              // SSID of the SoftAP (change me)
 const char* password = "changeme123";                 // AP password, min 8 chars (change me)
+
+// ===== Status LED (Seeed Studio XIAO ESP32-C6 user LED) =====
+// The XIAO ESP32-C6 user LED sits on GPIO15 and is active-LOW (LOW = on).
+// Driven by an esp_timer (independent of loop()), so the cadence stays
+// stable even when loop() stalls in server.handleClient() / blocking I/O.
+// Cadence: waiting for phone time sync -> 0.3s on / 0.7s off (1s period).
+//          after time sync            -> 0.5s on / 2.5s off (3s heartbeat).
+#define STATUS_LED_PIN        15
+#define STATUS_LED_ON         LOW
+#define STATUS_LED_OFF        HIGH
+#define LED_ON_MS_UNSYNCED    300
+#define LED_OFF_MS_UNSYNCED   700
+#define LED_ON_MS_SYNCED      500
+#define LED_OFF_MS_SYNCED     2500
 
 // ===== Config for Channel output =====
 const uint8_t NUM_CHANNELS = 16;
@@ -313,8 +328,48 @@ void initInfo()
     configWindowStart = millis();
 }
 
+static esp_timer_handle_t statusLedTimer = nullptr;
+static volatile bool      statusLedOn     = false;
+
+// Fires from the esp_timer task (independent of loop()), so blink timing is
+// immune to loop() stalls in server.handleClient() / blocking serial I/O.
+// One-shot, self-rearming: toggles the LED then schedules the next edge using
+// the current on/off duration for the current sync state.
+static void statusLedTimerCb(void* /*arg*/)
+{
+    statusLedOn = !statusLedOn;
+    digitalWrite(STATUS_LED_PIN, statusLedOn ? STATUS_LED_ON : STATUS_LED_OFF);
+
+    bool synced = takClockSynced();
+    uint32_t nextMs = statusLedOn
+        ? (synced ? LED_ON_MS_SYNCED  : LED_ON_MS_UNSYNCED)
+        : (synced ? LED_OFF_MS_SYNCED : LED_OFF_MS_UNSYNCED);
+
+    esp_timer_start_once(statusLedTimer, (uint64_t)nextMs * 1000ULL);
+}
+
+void initStatusLed()
+{
+    pinMode(STATUS_LED_PIN, OUTPUT);
+    digitalWrite(STATUS_LED_PIN, STATUS_LED_OFF);
+    statusLedOn = false;
+
+    const esp_timer_create_args_t args = {
+        .callback             = &statusLedTimerCb,
+        .arg                  = nullptr,
+        .dispatch_method      = ESP_TIMER_TASK,
+        .name                 = "status_led",
+        .skip_unhandled_events = true,
+    };
+    esp_timer_create(&args, &statusLedTimer);
+
+    // LED starts off; fire after the off-duration to begin the first on-phase.
+    esp_timer_start_once(statusLedTimer, (uint64_t)LED_OFF_MS_UNSYNCED * 1000ULL);
+}
+
 void setup() {
     initSerial();
+    initStatusLed();
     delay(3000);
     initWiFi();
     initESPNow();
@@ -392,4 +447,5 @@ void loop()
     // TAK / CoT Bridge (SoftAP web server + UDP CoT emit)
     // ======================================================
     takLoop();
+    // Status LED is driven by esp_timer (see initStatusLed), not from loop().
 }

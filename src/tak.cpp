@@ -224,6 +224,11 @@ void takInit(const char* ssid, const char* password)
     udp.begin(COT_PORT);
 }
 
+bool takClockSynced()
+{
+    return timeIsSet;
+}
+
 void takLoop()
 {
     server.handleClient();
