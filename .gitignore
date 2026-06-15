@@ -4,3 +4,10 @@
 .vscode/launch.json
 .vscode/ipch
 .gitnexus
+
+# TAK PKI / data packages: keep only the generator + docs, never the secrets
+/tak-pki/*
+!/tak-pki/gen.sh
+!/tak-pki/README.md
+# Generated firmware cert/key (run tak-pki/gen.sh to produce it)
+src/tak_cert.h
