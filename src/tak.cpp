@@ -13,12 +13,10 @@
   #include <WiFi.h>
   #include <WiFiUdp.h>
   #include <WebServer.h>
-  #include <DNSServer.h>
 #else
   #include <ESP8266WiFi.h>
   #include <WiFiUdp.h>
   #include <ESP8266WebServer.h>
-  #include <DNSServer.h>
 #endif
 
 // ======================================================
@@ -57,7 +55,6 @@ static WebServer server(80);
 #else
 static ESP8266WebServer server(80);
 #endif
-static DNSServer dns;
 
 static bool     timeIsSet = false;
 static uint32_t lastSend  = 0;
@@ -191,6 +188,15 @@ static void sendCoT()
     udp.endPacket();
 }
 
+// Answer OS connectivity probes with 404 = "no internet" (NOT the success page,
+// NOT captive HTML/redirect). This is the sweet spot: the phone keeps the WiFi
+// associated for local traffic (UDP CoT) while routing INTERNET over cellular/LTE,
+// and it avoids the captive-portal sheet that disconnects WiFi when backgrounded.
+static void handleNoInternet()
+{
+    server.send(404, "text/plain", "no internet");
+}
+
 // ======================================================
 // Public API
 // ======================================================
@@ -201,17 +207,18 @@ void takInit(const char* ssid, const char* password)
     WiFi.softAP(ssid, password, 1);
     IPAddress ip = WiFi.softAPIP();
     LOG_INFO("TAK SoftAP '%s' up at %s", ssid, ip.toString().c_str());
-    LOG_INFO("TAK: join the AP, a browser page will pop to sync the clock");
+    LOG_INFO("TAK: open http://192.168.4.1 on the phone to sync clock + pick drone");
 
-    // Captive portal: send every DNS lookup to us so iOS auto-opens the page.
-    dns.start(53, "*", ip);
-
+    // No DNS hijack on purpose: a catch-all DNS would poison the phone's lookups
+    // and break its cellular internet. Leaving DNS alone lets the phone treat this
+    // as a plain no-internet AP (WiFi kept for local UDP, internet via cellular).
     server.on("/", handleRoot);
     server.on("/settime", handleSetTime);
     server.on("/setdrone", handleSetDrone);
-    // iOS/Android connectivity-check URLs land here -> serve our page so the
-    // captive sign-in sheet appears automatically.
-    server.onNotFound(handleRoot);
+    // Everything else (incl. OS connectivity probes like /hotspot-detect.html)
+    // -> 404 "no internet": phone keeps WiFi for local UDP, uses LTE for internet.
+    // Reach the config page directly at http://192.168.4.1
+    server.onNotFound(handleNoInternet);
     server.begin();
 
     udp.begin(COT_PORT);
@@ -219,10 +226,23 @@ void takInit(const char* ssid, const char* password)
 
 void takLoop()
 {
-    dns.processNextRequest();
     server.handleClient();
 
     uint32_t nowms = millis();
+
+    // SoftAP association check: ground truth for "is the phone still on the AP".
+    // iOS may show LTE for internet while staying associated here -> UDP still
+    // arrives. Logged on change and every 10s.
+    static uint8_t  lastSta    = 255;
+    static uint32_t lastStaLog = 0;
+    uint8_t sta = WiFi.softAPgetStationNum();
+    if (sta != lastSta || nowms - lastStaLog > 10000)
+    {
+        lastSta    = sta;
+        lastStaLog = nowms;
+        LOG_INFO("TAK: SoftAP clients=%u (%s)", sta,
+                 sta ? "phone associated - UDP will arrive" : "NO client connected");
+    }
 
     if (!timeIsSet)
     {
