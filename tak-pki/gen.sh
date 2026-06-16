@@ -10,7 +10,11 @@
 #   tak-pki/caCert.p12 / clientCert.p12      - legacy PKCS#12 for data packages
 #   src/tak_cert.h                           - server cert+key baked into firmware
 #   tak-pki/dist/ESP-Drone-TAK-OmniTAK.zip   - data package for OmniTAK (ATAK-style)
-#   tak-pki/dist/ESP-Drone-TAK-iTAK.zip      - data package for iTAK / TAK Aware
+#   tak-pki/dist/ESP-Drone-TAK-iTAK.zip      - data package for iTAK (flat layout)
+#   tak-pki/dist/ESP-Drone-TAK-TAKAware.zip  - data package for TAK Aware (flat layout)
+#
+# All three packages share the SAME client cert (clientCert.p12); app identity is
+# not tracked on the ESP. Transport is TLS only (no UDP/plain-TCP).
 #
 # Self-signed, local-AP dev certs. Low sensitivity, but never commit the keys.
 # ======================================================================
@@ -65,7 +69,6 @@ with open(root + "/src/tak_cert.h", "w") as f:
 print("  wrote src/tak_cert.h")
 PY
 
-UUID1=$(uuidgen); UUID2=$(uuidgen)
 mkdir -p dist
 
 # ---- OmniTAK / ATAK-style package: certs in cert/, numbered keys, MANIFEST/ ----
@@ -91,7 +94,7 @@ PREF
 cat > build_omni/MANIFEST/manifest.xml <<MAN
 <MissionPackageManifest version="2">
   <Configuration>
-    <Parameter name="uid" value="$UUID1"/>
+    <Parameter name="uid" value="$(uuidgen)"/>
     <Parameter name="name" value="ESP-Drone-TAK-OmniTAK"/>
     <Parameter name="onReceiveDelete" value="false"/>
   </Configuration>
@@ -104,18 +107,23 @@ cat > build_omni/MANIFEST/manifest.xml <<MAN
 MAN
 ( cd build_omni && rm -f ../dist/ESP-Drone-TAK-OmniTAK.zip && \
   zip -r -X ../dist/ESP-Drone-TAK-OmniTAK.zip cert esp-drone.pref MANIFEST >/dev/null )
+rm -rf build_omni
 
-# ---- iTAK / TAK Aware package: flat root, NON-numbered keys in ----
-# ---- com.atakmap.app_preferences, root manifest.xml ----
-echo "== data package: iTAK / TAK Aware =="
-rm -rf build_itak && mkdir -p build_itak
-cp caCert.p12 clientCert.p12 build_itak/
-cat > build_itak/defaults.pref <<PREF
+# ---- flat-layout package (iTAK and TAK Aware use the same format): ----
+# ---- certs + .pref flat at root, NON-numbered keys in ----
+# ---- com.atakmap.app_preferences, root manifest.xml. ----
+# build_flat_package <PackageName> <OutputZip>
+build_flat_package() {
+  local name="$1" out="$2" desc="$3"
+  echo "== data package: $name =="
+  rm -rf build_flat && mkdir -p build_flat
+  cp caCert.p12 clientCert.p12 build_flat/
+  cat > build_flat/defaults.pref <<PREF
 <?xml version='1.0' encoding='ASCII' standalone='yes'?>
 <preferences>
   <preference version="1" name="cot_streams">
     <entry key="count" class="class java.lang.Integer">1</entry>
-    <entry key="description0" class="class java.lang.String">ESP Drone TAK</entry>
+    <entry key="description0" class="class java.lang.String">$desc</entry>
     <entry key="enabled0" class="class java.lang.Boolean">true</entry>
     <entry key="connectString0" class="class java.lang.String">$IP:$PORT:ssl</entry>
     <entry key="useAuth0" class="class java.lang.Boolean">false</entry>
@@ -129,11 +137,11 @@ cat > build_itak/defaults.pref <<PREF
   </preference>
 </preferences>
 PREF
-cat > build_itak/manifest.xml <<MAN
+  cat > build_flat/manifest.xml <<MAN
 <MissionPackageManifest version="2">
   <Configuration>
-    <Parameter name="uid" value="$UUID2" />
-    <Parameter name="name" value="ESP-Drone-TAK-iTAK" />
+    <Parameter name="uid" value="$(uuidgen)" />
+    <Parameter name="name" value="$name" />
   </Configuration>
   <Contents>
     <Content zipEntry="caCert.p12" ignore="false" />
@@ -142,12 +150,17 @@ cat > build_itak/manifest.xml <<MAN
   </Contents>
 </MissionPackageManifest>
 MAN
-( cd build_itak && rm -f ../dist/ESP-Drone-TAK-iTAK.zip && \
-  zip -X ../dist/ESP-Drone-TAK-iTAK.zip caCert.p12 clientCert.p12 defaults.pref manifest.xml >/dev/null )
+  ( cd build_flat && rm -f "../$out" && \
+    zip -X "../$out" caCert.p12 clientCert.p12 defaults.pref manifest.xml >/dev/null )
+  rm -rf build_flat
+}
 
-rm -rf build_omni build_itak
+build_flat_package "ESP-Drone-TAK-iTAK"    "dist/ESP-Drone-TAK-iTAK.zip"    "ESP Drone TAK (iTAK)"
+build_flat_package "ESP-Drone-TAK-TAKAware" "dist/ESP-Drone-TAK-TAKAware.zip" "ESP Drone TAK (TAK Aware)"
+
 echo
 echo "== done =="
 echo "  src/tak_cert.h  (rebuild firmware to embed it)"
 echo "  dist/ESP-Drone-TAK-OmniTAK.zip   -> import into OmniTAK"
-echo "  dist/ESP-Drone-TAK-iTAK.zip      -> import into iTAK / TAK Aware"
+echo "  dist/ESP-Drone-TAK-iTAK.zip      -> import into iTAK"
+echo "  dist/ESP-Drone-TAK-TAKAware.zip  -> import into TAK Aware"

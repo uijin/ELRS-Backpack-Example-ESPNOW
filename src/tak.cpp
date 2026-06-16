@@ -12,15 +12,13 @@
 
 #if defined(ESP32)
   #include <WiFi.h>
-  #include <WiFiUdp.h>
   #include <WebServer.h>
-  #include "esp_tls.h"            // TLS CoT server for iOS TAK (iTAK/OmniTAK)
+  #include "esp_tls.h"            // TLS CoT server for iOS TAK (OmniTAK/iTAK/TAK Aware)
   #include <lwip/sockets.h>
   #include <fcntl.h>
   #include "tak_cert.h"           // baked-in self-signed server cert + key
 #else
   #include <ESP8266WiFi.h>
-  #include <WiFiUdp.h>
   #include <ESP8266WebServer.h>
 #endif
 
@@ -37,9 +35,7 @@ extern bool motArmed;
 static const char*    COT_UID         = "DRONE-01";    // stable UID -> TAK auto-draws the track
 static const char*    COT_CALLSIGN    = "Drone-01";
 static const char*    COT_TYPE        = "a-f-A-M-F-Q";  // friendly UAS (air track)
-static const uint16_t COT_PORT        = 4242;           // UDP port (ATAK/WinTAK custom input)
-static const uint16_t COT_TCP_PORT    = 8087;           // plain TCP server (desktop / legacy tools)
-static const uint16_t COT_TLS_PORT    = 8089;           // TLS server (iOS TAK: iTAK / OmniTAK)
+static const uint16_t COT_TLS_PORT    = 8089;           // TLS server (iOS TAK: OmniTAK / iTAK / TAK Aware)
 static const uint32_t COT_INTERVAL_MS = 1000;           // ~1 Hz position updates
 static const uint32_t COT_STALE_SEC   = 10;             // marker greys out after this w/o updates
 
@@ -47,30 +43,24 @@ static const uint32_t COT_STALE_SEC   = 10;             // marker greys out afte
 // drone orbiting a fixed circle so you get a moving track in TAK indoors.
 // Set false for field use.
 static const bool   TAK_TEST_SIMULATE   = true;
-static const double SIM_CENTER_LAT      = 0.0;   // circle centre (set your test location)
-static const double SIM_CENTER_LON      = 0.0;
+static const double SIM_CENTER_LAT      = 22.66862578822146;   // circle centre
+static const double SIM_CENTER_LON      = 120.30209741628654;
 static const double SIM_RADIUS_M        = 100.0;               // metres
 static const double SIM_PERIOD_S        = 60.0;                // seconds per lap (~10.5 m/s)
 static const float  SIM_ALT_M           = 50.0f;               // reported hae
 
-#define MAX_TCP_CLIENTS 4
+#define MAX_TLS_CLIENTS 4   // OmniTAK / iTAK / TAK Aware can stream at once (+1 headroom)
 
 // Editable roster of drones that share this binding phrase. The phone picks one
 // from the captive-portal dropdown; the choice becomes the CoT uid + callsign.
 // (craft_name isn't reachable over the backpack, so identity is chosen manually.)
-static const char* DRONE_NAMES[] = { "Drone-1", "Drone-2", "Drone-3" };
+static const char* DRONE_NAMES[] = { "AT35", "M75", "M75P1" };
 static const uint8_t DRONE_COUNT = sizeof(DRONE_NAMES) / sizeof(DRONE_NAMES[0]);
-
-// SoftAP subnet broadcast (192.168.4.x is the ESP SoftAP default).
-// Broadcast reaches the single phone client without needing its lease IP.
-static const IPAddress COT_DEST(192, 168, 4, 255);
 
 // ======================================================
 // State
 // ======================================================
-static WiFiUDP udp;
-static WiFiServer cotServer(COT_TCP_PORT);   // streams CoT to connected TAK clients
-static WiFiClient tcpClients[MAX_TCP_CLIENTS];
+// TLS is the only CoT transport (iOS TAK apps require an SSL TAK server).
 #if defined(ESP32)
 static WebServer server(80);
 #else
@@ -182,12 +172,23 @@ static void handleSetTime()
 // One client at a time; raw CoT XML over TLS (TAK protocol version 0).
 // ======================================================
 #if defined(ESP32)
-static int        tlsListenFd = -1;
-static esp_tls_t* tlsConn     = nullptr;
-static int        tlsConnFd   = -1;
+// Multiple iOS TAK apps stream at once; each gets its own slot. App identity is
+// not tracked (all share one client cert) — the count is what we report.
+static int        tlsListenFd                = -1;
+static esp_tls_t* tlsConn[MAX_TLS_CLIENTS]   = { nullptr };
+static int        tlsConnFd[MAX_TLS_CLIENTS];
+
+static int tlsActiveCount()
+{
+    int n = 0;
+    for (int i = 0; i < MAX_TLS_CLIENTS; ++i) if (tlsConn[i]) ++n;
+    return n;
+}
 
 static void tlsServerBegin(uint16_t port)
 {
+    for (int i = 0; i < MAX_TLS_CLIENTS; ++i) { tlsConn[i] = nullptr; tlsConnFd[i] = -1; }
+
     tlsListenFd = socket(AF_INET, SOCK_STREAM, 0);
     if (tlsListenFd < 0) { LOG_ERROR("TAK TLS: socket() failed"); return; }
     int opt = 1;
@@ -202,57 +203,66 @@ static void tlsServerBegin(uint16_t port)
         LOG_ERROR("TAK TLS: bind :%u failed", port);
         close(tlsListenFd); tlsListenFd = -1; return;
     }
-    listen(tlsListenFd, 1);
+    listen(tlsListenFd, MAX_TLS_CLIENTS);
     fcntl(tlsListenFd, F_SETFL, O_NONBLOCK);
-    LOG_INFO("TAK: TLS CoT server on :%u", port);
+    LOG_INFO("TAK: TLS CoT server on :%u (up to %d clients)", port, MAX_TLS_CLIENTS);
 }
 
-static void tlsDrop()
+static void tlsDrop(int i)
 {
-    if (tlsConn) { esp_tls_server_session_delete(tlsConn); tlsConn = nullptr; }
-    if (tlsConnFd >= 0) { close(tlsConnFd); tlsConnFd = -1; }
+    if (tlsConn[i]) { esp_tls_server_session_delete(tlsConn[i]); tlsConn[i] = nullptr; }
+    if (tlsConnFd[i] >= 0) { close(tlsConnFd[i]); tlsConnFd[i] = -1; }
 }
 
 static void tlsServerService()
 {
     if (tlsListenFd < 0) return;
 
-    if (!tlsConn)
+    // Accept at most one new client per pass, into the first free slot.
+    int slot = -1;
+    for (int i = 0; i < MAX_TLS_CLIENTS; ++i) if (!tlsConn[i]) { slot = i; break; }
+    if (slot >= 0)
     {
         int cfd = accept(tlsListenFd, nullptr, nullptr);
-        if (cfd < 0) return;                       // no pending client
-
-        esp_tls_cfg_server_t cfg;
-        memset(&cfg, 0, sizeof(cfg));
-        cfg.servercert_buf   = (const unsigned char*)TAK_SERVER_CERT;
-        cfg.servercert_bytes = strlen(TAK_SERVER_CERT) + 1;
-        cfg.serverkey_buf    = (const unsigned char*)TAK_SERVER_KEY;
-        cfg.serverkey_bytes  = strlen(TAK_SERVER_KEY) + 1;   // no cacert -> client cert not verified
-
-        esp_tls_t* tls = esp_tls_init();
-        // Blocking handshake (~1-3s for RSA2048, one-time per connect).
-        int r = esp_tls_server_session_create(&cfg, cfd, tls);
-        if (r != 0)
+        if (cfd >= 0)
         {
-            LOG_ERROR("TAK: TLS handshake failed (%d)", r);
-            esp_tls_server_session_delete(tls);
-            close(cfd);
-            return;
+            esp_tls_cfg_server_t cfg;
+            memset(&cfg, 0, sizeof(cfg));
+            cfg.servercert_buf   = (const unsigned char*)TAK_SERVER_CERT;
+            cfg.servercert_bytes = strlen(TAK_SERVER_CERT) + 1;
+            cfg.serverkey_buf    = (const unsigned char*)TAK_SERVER_KEY;
+            cfg.serverkey_bytes  = strlen(TAK_SERVER_KEY) + 1;   // no cacert -> client cert not verified
+
+            esp_tls_t* tls = esp_tls_init();
+            // Blocking handshake (~1-3s for RSA2048, one-time per connect).
+            int r = esp_tls_server_session_create(&cfg, cfd, tls);
+            if (r != 0)
+            {
+                LOG_ERROR("TAK: TLS handshake failed (%d)", r);
+                esp_tls_server_session_delete(tls);
+                close(cfd);
+            }
+            else
+            {
+                fcntl(cfd, F_SETFL, O_NONBLOCK);       // non-blocking for steady-state
+                tlsConn[slot] = tls; tlsConnFd[slot] = cfd;
+                LOG_INFO("TAK: TLS client connected (slot %d, %d active)", slot, tlsActiveCount());
+            }
         }
-        fcntl(cfd, F_SETFL, O_NONBLOCK);           // non-blocking for steady-state
-        tlsConn = tls; tlsConnFd = cfd;
-        LOG_INFO("TAK: TLS client connected");
-        return;
     }
 
-    // Drain inbound chatter; detect close.
+    // Drain inbound chatter on every active client; detect close.
     char buf[128];
-    int r = esp_tls_conn_read(tlsConn, buf, sizeof(buf));
-    if (r == 0 ||
-        (r < 0 && r != ESP_TLS_ERR_SSL_WANT_READ && r != ESP_TLS_ERR_SSL_WANT_WRITE))
+    for (int i = 0; i < MAX_TLS_CLIENTS; ++i)
     {
-        LOG_INFO("TAK: TLS client disconnected");
-        tlsDrop();
+        if (!tlsConn[i]) continue;
+        int r = esp_tls_conn_read(tlsConn[i], buf, sizeof(buf));
+        if (r == 0 ||
+            (r < 0 && r != ESP_TLS_ERR_SSL_WANT_READ && r != ESP_TLS_ERR_SSL_WANT_WRITE))
+        {
+            tlsDrop(i);
+            LOG_INFO("TAK: TLS client disconnected (slot %d, %d active)", i, tlsActiveCount());
+        }
     }
 }
 
@@ -281,16 +291,19 @@ static void serviceApiPort(int fd)
 
 static void tlsServerWrite(const char* data, int len)
 {
-    if (!tlsConn) return;
-    int off = 0;
-    while (off < len)
+    for (int i = 0; i < MAX_TLS_CLIENTS; ++i)
     {
-        int w = esp_tls_conn_write(tlsConn, data + off, len - off);
-        if (w > 0) { off += w; continue; }
-        if (w == ESP_TLS_ERR_SSL_WANT_WRITE || w == ESP_TLS_ERR_SSL_WANT_READ) continue;
-        LOG_INFO("TAK: TLS write failed (%d), dropping client", w);
-        tlsDrop();
-        return;
+        if (!tlsConn[i]) continue;
+        int off = 0;
+        while (off < len)
+        {
+            int w = esp_tls_conn_write(tlsConn[i], data + off, len - off);
+            if (w > 0) { off += w; continue; }
+            if (w == ESP_TLS_ERR_SSL_WANT_WRITE || w == ESP_TLS_ERR_SSL_WANT_READ) continue;
+            LOG_INFO("TAK: TLS write failed (%d), dropping slot %d", w, i);
+            tlsDrop(i);
+            break;
+        }
     }
 }
 #endif  // ESP32
@@ -341,50 +354,10 @@ static void sendCoT()
     if (n <= 0 || n >= (int)sizeof(xml))
         return;
 
-    // UDP broadcast -> ATAK / WinTAK custom inputs
-    udp.beginPacket(COT_DEST, COT_PORT);
-    udp.write((const uint8_t*)xml, n);
-    udp.endPacket();
-
-    // Plain-TCP stream -> desktop / legacy tools
-    for (int i = 0; i < MAX_TCP_CLIENTS; ++i)
-        if (tcpClients[i] && tcpClients[i].connected())
-            tcpClients[i].write((const uint8_t*)xml, n);
-
-    // TLS stream -> iOS TAK apps (iTAK / OmniTAK)
+    // TLS is the only transport -> iOS TAK apps (OmniTAK / iTAK / TAK Aware)
 #if defined(ESP32)
     tlsServerWrite(xml, n);
 #endif
-}
-
-// Accept new TCP CoT clients, drain their inbound chatter, drop dead sockets.
-static void tcpServiceClients()
-{
-#if defined(ESP32)
-    WiFiClient nc = cotServer.accept();
-#else
-    WiFiClient nc = cotServer.available();
-#endif
-    if (nc)
-    {
-        int slot = -1;
-        for (int i = 0; i < MAX_TCP_CLIENTS; ++i)
-            if (!tcpClients[i] || !tcpClients[i].connected()) { slot = i; break; }
-        if (slot >= 0)
-        {
-            tcpClients[slot].stop();
-            tcpClients[slot] = nc;
-            LOG_INFO("TAK: TCP client connected (slot %d)", slot);
-        }
-        else
-        {
-            nc.stop();   // all slots busy
-        }
-    }
-
-    for (int i = 0; i < MAX_TCP_CLIENTS; ++i)
-        if (tcpClients[i] && tcpClients[i].connected())
-            while (tcpClients[i].available()) tcpClients[i].read();   // discard client CoT
 }
 
 // Answer OS connectivity probes with 404 = "no internet" (NOT the success page,
@@ -420,16 +393,15 @@ void takInit(const char* ssid, const char* password)
     server.onNotFound(handleNoInternet);
     server.begin();
 
-    udp.begin(COT_PORT);                 // UDP broadcast -> ATAK / WinTAK
-    cotServer.begin();                   // plain TCP     -> desktop / legacy tools
-    cotServer.setNoDelay(true);
 #if defined(ESP32)
-    tlsServerBegin(COT_TLS_PORT);        // TLS           -> iOS TAK (iTAK / OmniTAK)
+    tlsServerBegin(COT_TLS_PORT);        // TLS only -> iOS TAK (OmniTAK / iTAK / TAK Aware)
     apiFd8443 = openApiPort(8443);       // accept iOS clients' API reachability probe
     apiFd8446 = openApiPort(8446);       // accept iOS clients' enrollment reachability probe
+    LOG_INFO("TAK: CoT on TLS :%u only (OmniTAK / iTAK / TAK Aware), up to %d clients",
+             COT_TLS_PORT, MAX_TLS_CLIENTS);
+#else
+    LOG_INFO("TAK: TLS CoT server requires ESP32; no transport on this target");
 #endif
-    LOG_INFO("TAK: CoT on UDP :%u (ATAK/WinTAK), TCP :%u, TLS :%u (iTAK/OmniTAK)",
-             COT_PORT, COT_TCP_PORT, COT_TLS_PORT);
 }
 
 bool takClockSynced()
@@ -440,7 +412,6 @@ bool takClockSynced()
 void takLoop()
 {
     server.handleClient();
-    tcpServiceClients();
 #if defined(ESP32)
     tlsServerService();
     serviceApiPort(apiFd8443);
@@ -450,8 +421,8 @@ void takLoop()
     uint32_t nowms = millis();
 
     // SoftAP association check: ground truth for "is the phone still on the AP".
-    // iOS may show LTE for internet while staying associated here -> UDP still
-    // arrives. Logged on change and every 10s.
+    // iOS may show LTE for internet while staying associated here -> the TLS CoT
+    // stream still works. Logged on change and every 10s.
     static uint8_t  lastSta    = 255;
     static uint32_t lastStaLog = 0;
     uint8_t sta = WiFi.softAPgetStationNum();
@@ -460,7 +431,7 @@ void takLoop()
         lastSta    = sta;
         lastStaLog = nowms;
         LOG_INFO("TAK: SoftAP clients=%u (%s)", sta,
-                 sta ? "phone associated - UDP will arrive" : "NO client connected");
+                 sta ? "phone associated - TLS CoT reachable" : "NO client connected");
     }
 
     if (!timeIsSet)

@@ -3,8 +3,11 @@
 // ======================================================
 // TAK / CoT Bridge
 // ------------------------------------------------------
-// Streams the decoded drone telemetry to an iOS TAK app
-// (TAK Aware / iTAK) as Cursor-on-Target (CoT) UDP events.
+// Streams the decoded drone telemetry to iOS TAK apps
+// (OmniTAK / iTAK / TAK Aware) as Cursor-on-Target (CoT)
+// events over a TLS CoT server (the only transport; UDP
+// broadcast and plain TCP have been removed). Multiple
+// apps can stream concurrently (MAX_TLS_CLIENTS).
 //
 // Topology: the ESP runs its own WiFi SoftAP on the SAME
 // channel as the ELRS ESP-NOW link (channel 1). The phone

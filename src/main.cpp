@@ -56,7 +56,7 @@ enum RadioMode
 // Config Elrs Binding
 //uint8_t UID[6] = {0,0,0,0,0,0}; // this is my UID. You have to change it to your once, should look
 //uint8_t UID[6] = {106,19,19,206,193,30};
-uint8_t UID[6] = {0,0,0,0,0,0};   // <-- enter YOUR UID (hash of your binding phrase)
+uint8_t UID[6] = {41,244,219,135,89,95};
 
 // ======================================================
 // RadioMode Configuration
@@ -82,8 +82,8 @@ RadioMode radioMode = MODE_BOTH;   // Default startup mode
 const unsigned long CONFIG_WINDOW_MS = 5000;  // 5 seconds
 
 // ===== AP Wifi Config =====
-const char* ssid = "Backpack_TAK";              // SSID of the SoftAP (change me)
-const char* password = "changeme123";                 // AP password, min 8 chars (change me)
+const char* ssid = "C6_Backpack_TAK";           // SSID des Access Points
+const char* password = "super88888";                  // Passwort des Access Points
 
 // ===== Status LED (Seeed Studio XIAO ESP32-C6 user LED) =====
 // The XIAO ESP32-C6 user LED sits on GPIO15 and is active-LOW (LOW = on).
@@ -376,7 +376,7 @@ void setup() {
     initESP32Queue();
     vrxModule.init(UID);
     initRamp();
-    takInit(ssid, password);   // SoftAP + CoT/UDP bridge for iOS TAK
+    takInit(ssid, password);   // SoftAP + TLS CoT bridge for iOS TAK
     initInfo();
 }
 
