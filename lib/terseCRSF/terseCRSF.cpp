@@ -392,7 +392,7 @@ uint8_t CRSF::decodeTelemetry(uint8_t *_buf, uint8_t len)
       // Capacity used is a 24-bit big-endian value (mAh). Read exactly 3 bytes;
       // bytes2int32() would read _buf[7..10] and pull _buf[10] (battery remaining %)
       // into the low byte, corrupting the value.
-      bat_fuel_drawn = ((uint32_t)_buf[7] << 16) | ((uint32_t)_buf[8] << 8) | (uint32_t)_buf[9];
+      bat_fuel_drawn = ((uint32_t)_buf[7] << 16) | ((uint32_t)_buf[8] << 8) | (uint32_t)_buf[9]; // uint24_t   mAh drawn
       batF_fuel_drawn = (float)bat_fuel_drawn;        // mAh drawn
       bat_remaining = (uint8_t)_buf[10];              // percent
       break;

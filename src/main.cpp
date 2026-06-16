@@ -56,7 +56,19 @@ enum RadioMode
 // Config Elrs Binding
 //uint8_t UID[6] = {0,0,0,0,0,0}; // this is my UID. You have to change it to your once, should look
 //uint8_t UID[6] = {106,19,19,206,193,30};
+
+// Prüfen, ob die externe Config-Datei existiert (gitignored, keep your UID out of git)
+#if __has_include("my_config.h")
+#include "my_config.h"
+#endif
+
+// Wenn die Config geladen wurde und die UID definiert ist, nimm diese.
+// Andernfalls nimm den Standard-Fallback.
+#ifdef MY_CUSTOM_UID
+uint8_t UID[6] = MY_CUSTOM_UID;
+#else
 uint8_t UID[6] = {41,244,219,135,89,95};
+#endif
 
 // ======================================================
 // RadioMode Configuration
@@ -112,7 +124,6 @@ float wavePhase = 0.0;
 // 4. Global Objects
 // ======================================================
 
-
 unsigned long configWindowStart = 0;
 uint16_t rampChannels[NUM_CHANNELS];
 uint32_t lastStepTime = 0;
@@ -120,11 +131,12 @@ uint8_t activeChannel = 0;
 bool rampUp = true;
 
 volatile bool espnow_received = false;
-volatile uint16_t espnow_len = 0;
-uint8_t espnow_buffer[250];
 volatile uint16_t crsf_len = 0;
 
+uint8_t espnow_buffer[250];   // used by the unified OnDataRecv on all platforms
+
 #if defined(ESP32)
+volatile uint16_t espnow_len = 0;
 portMUX_TYPE mux = portMUX_INITIALIZER_UNLOCKED;
 #endif
 
@@ -254,6 +266,9 @@ void initWiFi()
         esp_wifi_set_mac(WIFI_IF_AP, ap_mac);
 
         esp_wifi_start();
+        // PFLICHT FÜR DEN RAW-FRAME (custom_esp_now_send Bypass auf der STA-Schnittstelle):
+        esp_wifi_set_protocol(WIFI_IF_STA, WIFI_PROTOCOL_11B);
+        esp_wifi_set_max_tx_power(8); // Problem with bad Antenna on esp32c3
         esp_wifi_set_channel(1, WIFI_SECOND_CHAN_NONE);
     #else
         wifi_set_macaddr(STATION_IF, UID);
@@ -277,10 +292,8 @@ void initESPNow()
     esp_now_register_recv_cb(OnDataRecv);
 
     #if defined(ESP32)
-        // Für den ESP32 müssen wir hier keine Sende-Peers registrieren.
-        // Der RX-Empfang geht automatisch.
-        // Das TX-Senden (Senden an sich selbst) wird über den L2-Raw-Bypass
-        // in der fake_vrx_fake_trainer.cpp abgewickelt!
+        // KEINE PEER REGISTRIERUNG MEHR NÖTIG!
+        // Der custom_esp_now_send Bypass (fake_vrx_fake_trainer.cpp) feuert an der API vorbei.
     #else
         // FÜR ESP8266: Bleibt komplett unverändert auf der Original-Logik
         esp_now_set_self_role(ESP_NOW_ROLE_COMBO);
@@ -386,7 +399,6 @@ void setup() {
 
 void loop()
 {
-
     // ======================================================
     // Serial Mode Switch (only during config window)
     // ======================================================
@@ -441,6 +453,9 @@ void loop()
     if (radioMode != MODE_RX_ONLY)
     {
         vrxModule.updateChannelRamp();   // ESP-NOW senden
+        #if defined(ESP32)
+        delay(10);
+        #endif
     }
 
     // ======================================================

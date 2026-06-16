@@ -12,3 +12,5 @@
 # Generated firmware cert/key (run tak-pki/gen.sh to produce it)
 src/tak_cert.h
 .DS_Store
+current_prob.txt
+src/my_config.h
