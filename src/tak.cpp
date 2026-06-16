@@ -34,15 +34,16 @@ extern bool motArmed;
 // ======================================================
 static const char*    COT_UID         = "DRONE-01";    // stable UID -> TAK auto-draws the track
 static const char*    COT_CALLSIGN    = "Drone-01";
-static const char*    COT_TYPE        = "a-f-A-M-F-Q";  // friendly UAS (air track)
+static const char*    COT_TYPE        = "a-f-A-M-H-Q";  // friendly rotary-wing UAS (helicopter icon)
 static const uint16_t COT_TLS_PORT    = 8089;           // TLS server (iOS TAK: OmniTAK / iTAK / TAK Aware)
 static const uint32_t COT_INTERVAL_MS = 1000;           // ~1 Hz position updates
 static const uint32_t COT_STALE_SEC   = 10;             // marker greys out after this w/o updates
 
 // TEST: when true, ignore real GPS and (once a drone is selected) simulate the
 // drone orbiting a fixed circle so you get a moving track in TAK indoors.
-// Set false for field use.
-static const bool   TAK_TEST_SIMULATE   = true;
+// Runtime-toggleable from the captive portal (Simulate button); defaults OFF
+// for field use (real GPS).
+static bool         takTestSimulate     = false;
 static const double SIM_CENTER_LAT      = 22.66862578822146;   // circle centre
 static const double SIM_CENTER_LON      = 120.30209741628654;
 static const double SIM_RADIUS_M        = 100.0;               // metres
@@ -109,11 +110,15 @@ static void handleRoot()
     }
     html += F("</select> <button onclick=setd()>Set</button></p><p id=c>Current: ");
     html += (selectedDrone[0] ? selectedDrone : "(none)");
-    html += F("</p><script>"
+    html += F("</p><p>Simulate: <button id=sim onclick=tsim()>");
+    html += (takTestSimulate ? "ON" : "OFF");
+    html += F("</button></p><script>"
         "fetch('/settime?ms='+Date.now()).then(r=>r.text())"
         ".then(t=>{s.innerText='Clock set: '+t;}).catch(e=>{s.innerText='Sync failed';});"
         "function setd(){fetch('/setdrone?name='+encodeURIComponent(d.value)+'&ms='+Date.now())"
         ".then(r=>r.text()).then(t=>{c.innerText='Current: '+t+' (clock re-synced)';});}"
+        "function tsim(){var on=sim.innerText=='ON'?0:1;"
+        "fetch('/setsim?on='+on).then(r=>r.text()).then(t=>{sim.innerText=t;});}"
         "</script></body></html>");
     server.send(200, "text/html", html);
 }
@@ -134,6 +139,19 @@ static void handleSetDrone()
     LOG_INFO("TAK: drone selected -> '%s' (clock %ssynced)",
              selectedDrone, server.hasArg("ms") ? "re-" : "not ");
     server.send(200, "text/plain", selectedDrone);
+}
+
+// Toggle the simulated-orbit test mode at runtime. ?on=1 -> simulate, ?on=0 ->
+// real GPS. Replies with the new state ("ON"/"OFF") so the page can update.
+static void handleSetSim()
+{
+    if (server.hasArg("on"))
+        takTestSimulate = (server.arg("on").toInt() != 0);
+    else
+        takTestSimulate = !takTestSimulate;   // no arg -> plain toggle
+
+    LOG_INFO("TAK: simulate mode -> %s", takTestSimulate ? "ON (orbit)" : "OFF (real GPS)");
+    server.send(200, "text/plain", takTestSimulate ? "ON" : "OFF");
 }
 
 // Apply a UTC-milliseconds-since-epoch value (from the phone's Date.now(),
@@ -326,7 +344,7 @@ static void sendCoT()
     float  course = crsf.gpsF_heading;            // deg
     float  speed  = crsf.gpsF_groundspeed / 3.6f; // km/h -> m/s
 
-    if (TAK_TEST_SIMULATE)
+    if (takTestSimulate)
     {
         const double R = 6378137.0;               // earth radius, m
         double theta = 2.0 * M_PI * (millis() / 1000.0) / SIM_PERIOD_S;
@@ -387,6 +405,7 @@ void takInit(const char* ssid, const char* password)
     server.on("/", handleRoot);
     server.on("/settime", handleSetTime);
     server.on("/setdrone", handleSetDrone);
+    server.on("/setsim", handleSetSim);
     // Everything else (incl. OS connectivity probes like /hotspot-detect.html)
     // -> 404 "no internet": phone keeps WiFi for local UDP, uses LTE for internet.
     // Reach the config page directly at http://192.168.4.1
@@ -448,7 +467,7 @@ void takLoop()
     {
         lastSend = nowms;
 
-        if (TAK_TEST_SIMULATE)
+        if (takTestSimulate)
         {
             // Simulated orbit: only fly once a drone has been selected.
             if (!selectedDrone[0]) return;

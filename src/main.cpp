@@ -94,8 +94,8 @@ const char* password = "super88888";                  // Passwort des Access Poi
 #define STATUS_LED_PIN        15
 #define STATUS_LED_ON         LOW
 #define STATUS_LED_OFF        HIGH
-#define LED_ON_MS_UNSYNCED    300
-#define LED_OFF_MS_UNSYNCED   700
+#define LED_ON_MS_UNSYNCED    200
+#define LED_OFF_MS_UNSYNCED   300
 #define LED_ON_MS_SYNCED      500
 #define LED_OFF_MS_SYNCED     2500
 
