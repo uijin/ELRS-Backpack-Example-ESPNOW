@@ -11,3 +11,4 @@
 !/tak-pki/README.md
 # Generated firmware cert/key (run tak-pki/gen.sh to produce it)
 src/tak_cert.h
+.DS_Store
